@@ -6,6 +6,7 @@
 let grid;
 let neuralNetwork;
 let cellularAutomata;
+let trainer;
 let testCanvas;
 let testCtx;
 let targetCanvas;
@@ -15,6 +16,7 @@ let isDragging = false; // Track if mouse is being dragged on test canvas
 let lastCellX = -1; // Track last modified cell to avoid duplicate toggles
 let lastCellY = -1;
 let runButton;
+let trainButton;
 
 /**
  * Initialize the application
@@ -39,6 +41,11 @@ function init() {
     // Initialize grid
     grid = new Grid(100, 100);
     
+    // Place a single seed cell at the center of the grid
+    const centerX = Math.floor(grid.width / 2);
+    const centerY = Math.floor(grid.height / 2);
+    grid.setCell(centerX, centerY, true);
+    
     // Initialize neural network
     neuralNetwork = new NeuralNetwork({
         hiddenSize1: 64,
@@ -58,6 +65,13 @@ function init() {
     // Initialize cellular automata
     cellularAutomata = new CellularAutomata(grid, neuralNetwork);
     
+    // Initialize trainer
+    trainer = new Trainer(grid, neuralNetwork, cellularAutomata, {
+        learningRate: 0.001,
+        optimizer: 'adam',
+        batchSize: 100
+    });
+    
     // Initialize target shape (10×10)
     targetShape = [];
     for (let y = 0; y < 10; y++) {
@@ -69,6 +83,7 @@ function init() {
     
     // Get button references
     runButton = document.getElementById('runBtn');
+    trainButton = document.getElementById('trainBtn');
     
     // Initial render
     renderTestCanvas();
@@ -265,11 +280,77 @@ function toggleTestCanvasCell(event) {
 }
 
 /**
- * Handle Train button click (placeholder)
+ * Handle Train button click - start training
  */
-function handleTrain() {
-    console.log('Train button clicked');
-    // TODO: Implement training logic
+async function handleTrain() {
+    if (!trainer) {
+        console.error('Trainer not initialized');
+        return;
+    }
+    
+    if (trainer.getIsTraining()) {
+        // Stop training
+        trainer.stopTraining();
+        trainButton.textContent = 'Train';
+        trainButton.disabled = false;
+        console.log('Training stopped');
+        return;
+    }
+    
+    // Check if target shape has any pixels
+    let hasTarget = false;
+    for (let y = 0; y < 10; y++) {
+        for (let x = 0; x < 10; x++) {
+            if (targetShape[y][x]) {
+                hasTarget = true;
+                break;
+            }
+        }
+        if (hasTarget) break;
+    }
+    
+    if (!hasTarget) {
+        alert('Please draw a target shape in the 10×10 editor first!');
+        return;
+    }
+    
+    // Stop CA if running
+    if (cellularAutomata && cellularAutomata.getIsRunning()) {
+        cellularAutomata.stop();
+        runButton.textContent = 'Run';
+    }
+    
+    // Start training
+    trainButton.textContent = 'Training...';
+    trainButton.disabled = true;
+    console.log('Starting training...');
+    
+    try {
+        // Train for 100 steps (can be adjusted)
+        await trainer.train(targetShape, 100, (step, loss, shouldContinue) => {
+            console.log(`Training step ${step}, loss: ${loss.toFixed(6)}`);
+            
+            // Update display every 10 steps
+            if (step % 10 === 0) {
+                renderTestCanvas();
+            }
+            
+            return shouldContinue;
+        });
+        
+        console.log('Training completed');
+        const lossHistory = trainer.getLossHistory();
+        if (lossHistory.length > 0) {
+            console.log(`Final loss: ${lossHistory[lossHistory.length - 1].toFixed(6)}`);
+        }
+    } catch (error) {
+        console.error('Training error:', error);
+        alert('Training failed: ' + error.message);
+    } finally {
+        trainButton.textContent = 'Train';
+        trainButton.disabled = false;
+        renderTestCanvas();
+    }
 }
 
 /**
