@@ -19,6 +19,10 @@ class CellularAutomata {
         this.animationFrameId = null;
         this.updateCallback = null; // Optional callback after each update
         this.updateInterval = 100; // Milliseconds between updates (default: 100ms = 10 FPS)
+        this.maxSteps = null; // Maximum number of steps to run (null = unlimited)
+        this.currentStep = 0; // Current step count
+        this.isContinuous = false; // If true, ignore maxSteps
+        this.completionCallback = null; // Callback called when run completes (due to step limit)
     }
     
     /**
@@ -61,8 +65,11 @@ class CellularAutomata {
      * Start continuous update loop
      * @param {Function} callback - Optional callback function called after each update
      * @param {number} interval - Optional update interval in milliseconds (default: 100ms)
+     * @param {number} maxSteps - Optional maximum number of steps to run (null = unlimited)
+     * @param {boolean} isContinuous - If true, ignore maxSteps and run continuously
+     * @param {Function} completionCallback - Optional callback called when run completes (due to step limit)
      */
-    start(callback = null, interval = null) {
+    start(callback = null, interval = null, maxSteps = null, isContinuous = false, completionCallback = null) {
         if (this.isRunning) {
             console.warn('Cellular Automata is already running');
             return;
@@ -72,6 +79,10 @@ class CellularAutomata {
         if (interval !== null) {
             this.updateInterval = interval;
         }
+        this.maxSteps = maxSteps;
+        this.isContinuous = isContinuous;
+        this.currentStep = 0;
+        this.completionCallback = completionCallback;
         
         this.isRunning = true;
         this._runLoop();
@@ -86,6 +97,8 @@ class CellularAutomata {
             cancelAnimationFrame(this.animationFrameId);
             this.animationFrameId = null;
         }
+        this.currentStep = 0;
+        this.completionCallback = null; // Clear completion callback when manually stopped
     }
     
     /**
@@ -101,6 +114,19 @@ class CellularAutomata {
         // Perform update
         try {
             this.update();
+            this.currentStep++;
+            
+            // Check if we've reached the step limit (unless continuous mode)
+            if (!this.isContinuous && this.maxSteps !== null && this.currentStep >= this.maxSteps) {
+                // Save completion callback before stopping (stop() clears it)
+                const completionCallback = this.completionCallback;
+                this.stop();
+                // Call completion callback if provided
+                if (completionCallback) {
+                    completionCallback();
+                }
+                return;
+            }
             
             // Call callback if provided
             if (this.updateCallback) {

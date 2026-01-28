@@ -12,8 +12,8 @@ class NeuralNetwork {
      * @param {number} config.hiddenSize2 - Size of second hidden layer (default: 128)
      */
     constructor(config = {}) {
-        this.hiddenSize1 = config.hiddenSize1 || 64;
-        this.hiddenSize2 = config.hiddenSize2 || 128;
+        this.hiddenSize1 = config.hiddenSize1 || 32;
+        this.hiddenSize2 = config.hiddenSize2 || 32;
         this.model = null;
         this.isInitialized = false;
     }

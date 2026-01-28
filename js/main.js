@@ -18,6 +18,9 @@ let lastCellY = -1;
 let runButton;
 let trainButton;
 let clearButton;
+let genStepsDropdown;
+let continuousCheckbox;
+let lossValueElement;
 
 /**
  * Initialize the application
@@ -40,7 +43,7 @@ function init() {
     testCtx.imageSmoothingEnabled = false;
     
     // Initialize grid
-    grid = new Grid(100, 100);
+    grid = new Grid(10, 10);
     
     // Place a single seed cell at the center of the grid
     const centerX = Math.floor(grid.width / 2);
@@ -87,6 +90,9 @@ function init() {
     runButton = document.getElementById('runBtn');
     trainButton = document.getElementById('trainBtn');
     clearButton = document.getElementById('clearBtn');
+    genStepsDropdown = document.getElementById('genSteps');
+    continuousCheckbox = document.getElementById('continuousCheckbox');
+    lossValueElement = document.getElementById('lossValue');
     
     // Initial render
     renderTestCanvas();
@@ -208,6 +214,58 @@ function handleTargetCanvasClick(event) {
  */
 function getTargetShape() {
     return targetShape;
+}
+
+/**
+ * Calculate and display the loss between current grid state and target shape
+ */
+function calculateAndDisplayLoss() {
+    if (!grid || !targetShape || !lossValueElement) {
+        return;
+    }
+    
+    // Check if target shape has any pixels
+    let hasTarget = false;
+    for (let y = 0; y < 10; y++) {
+        for (let x = 0; x < 10; x++) {
+            if (targetShape[y][x]) {
+                hasTarget = true;
+                break;
+            }
+        }
+        if (hasTarget) break;
+    }
+    
+    if (!hasTarget) {
+        lossValueElement.textContent = '-';
+        return;
+    }
+    
+    // Extract center 10×10 region from 100×100 grid
+    const centerX = Math.floor(grid.width / 2) - 5;
+    const centerY = Math.floor(grid.height / 2) - 5;
+    
+    let totalLoss = 0;
+    let cellCount = 0;
+    
+    for (let ty = 0; ty < 10; ty++) {
+        for (let tx = 0; tx < 10; tx++) {
+            const gridX = centerX + tx;
+            const gridY = centerY + ty;
+            
+            const cell = grid.getCell(gridX, gridY);
+            const targetValue = targetShape[ty][tx] ? 1.0 : 0.0;
+            const actualValue = cell.on ? 1.0 : 0.0;
+            
+            // Mean squared error
+            const error = targetValue - actualValue;
+            totalLoss += error * error;
+            cellCount++;
+        }
+    }
+    
+    const loss = totalLoss / cellCount;
+    lossValueElement.textContent = loss.toFixed(6);
 }
 
 /**
@@ -368,16 +426,30 @@ function handleRun() {
         // Stop the CA
         cellularAutomata.stop();
         runButton.textContent = 'Run';
+        calculateAndDisplayLoss();
         console.log('CA stopped');
     } else {
+        // Get values from dropdown and checkbox
+        const maxSteps = parseInt(genStepsDropdown.value, 10);
+        const isContinuous = continuousCheckbox.checked;
+        
         // Start the CA with rendering callback
         cellularAutomata.start(() => {
             // Callback after each update: re-render the canvas
             renderTestCanvas();
-        }, 100); // 100ms interval (10 FPS)
+        }, 100, // 100ms interval (10 FPS)
+        isContinuous ? null : maxSteps, // maxSteps (null if continuous)
+        isContinuous, // isContinuous flag
+        () => {
+            // Completion callback: called when step limit is reached
+            runButton.textContent = 'Run';
+            calculateAndDisplayLoss();
+            console.log('CA completed (step limit reached)');
+        }
+        );
         
         runButton.textContent = 'Stop';
-        console.log('CA started');
+        console.log(`CA started (${isContinuous ? 'continuous' : maxSteps + ' steps'})`);
     }
 }
 
@@ -406,6 +478,9 @@ function handleClear() {
     
     // Re-render the test canvas
     renderTestCanvas();
+    
+    // Update loss display
+    calculateAndDisplayLoss();
     
     console.log('Grid cleared and reset to single seed cell');
 }
