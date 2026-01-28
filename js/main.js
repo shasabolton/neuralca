@@ -4,6 +4,8 @@
 
 // Global references
 let grid;
+let neuralNetwork;
+let cellularAutomata;
 let testCanvas;
 let testCtx;
 let targetCanvas;
@@ -12,6 +14,7 @@ let targetShape; // 10×10 boolean array for target shape
 let isDragging = false; // Track if mouse is being dragged on test canvas
 let lastCellX = -1; // Track last modified cell to avoid duplicate toggles
 let lastCellY = -1;
+let runButton;
 
 /**
  * Initialize the application
@@ -36,6 +39,25 @@ function init() {
     // Initialize grid
     grid = new Grid(100, 100);
     
+    // Initialize neural network
+    neuralNetwork = new NeuralNetwork({
+        hiddenSize1: 64,
+        hiddenSize2: 128
+    });
+    
+    // Initialize neural network model
+    try {
+        neuralNetwork.initialize();
+        console.log('Neural network initialized');
+    } catch (error) {
+        console.error('Failed to initialize neural network:', error);
+        alert('Failed to initialize neural network. Please check that TensorFlow.js is loaded.');
+        return;
+    }
+    
+    // Initialize cellular automata
+    cellularAutomata = new CellularAutomata(grid, neuralNetwork);
+    
     // Initialize target shape (10×10)
     targetShape = [];
     for (let y = 0; y < 10; y++) {
@@ -44,6 +66,9 @@ function init() {
             targetShape[y][x] = false;
         }
     }
+    
+    // Get button references
+    runButton = document.getElementById('runBtn');
     
     // Initial render
     renderTestCanvas();
@@ -58,9 +83,9 @@ function init() {
     testCanvas.addEventListener('mouseup', handleTestCanvasMouseUp);
     testCanvas.addEventListener('mouseleave', handleTestCanvasMouseUp); // Stop dragging if mouse leaves canvas
     
-    // Set up button handlers (placeholders for now)
+    // Set up button handlers
     document.getElementById('trainBtn').addEventListener('click', handleTrain);
-    document.getElementById('runBtn').addEventListener('click', handleRun);
+    runButton.addEventListener('click', handleRun);
     
     console.log('Initialization complete');
 }
@@ -170,6 +195,12 @@ function getTargetShape() {
  * Handle mousedown on test canvas - start drawing
  */
 function handleTestCanvasMouseDown(event) {
+    // Pause CA updates while drawing
+    if (cellularAutomata && cellularAutomata.getIsRunning()) {
+        cellularAutomata.stop();
+        runButton.textContent = 'Run';
+    }
+    
     isDragging = true;
     lastCellX = -1;
     lastCellY = -1;
@@ -242,11 +273,29 @@ function handleTrain() {
 }
 
 /**
- * Handle Run button click (placeholder)
+ * Handle Run button click - start/stop CA update loop
  */
 function handleRun() {
-    console.log('Run button clicked');
-    // TODO: Implement CA update loop
+    if (!cellularAutomata) {
+        console.error('Cellular automata not initialized');
+        return;
+    }
+    
+    if (cellularAutomata.getIsRunning()) {
+        // Stop the CA
+        cellularAutomata.stop();
+        runButton.textContent = 'Run';
+        console.log('CA stopped');
+    } else {
+        // Start the CA with rendering callback
+        cellularAutomata.start(() => {
+            // Callback after each update: re-render the canvas
+            renderTestCanvas();
+        }, 100); // 100ms interval (10 FPS)
+        
+        runButton.textContent = 'Stop';
+        console.log('CA started');
+    }
 }
 
 // Initialize when DOM is ready
