@@ -17,6 +17,7 @@ let lastCellX = -1; // Track last modified cell to avoid duplicate toggles
 let lastCellY = -1;
 let runButton;
 let trainButton;
+let clearButton;
 
 /**
  * Initialize the application
@@ -69,7 +70,8 @@ function init() {
     trainer = new Trainer(grid, neuralNetwork, cellularAutomata, {
         learningRate: 0.001,
         optimizer: 'adam',
-        batchSize: 100
+        batchSize: 100,
+        caStepsPerIteration: 10
     });
     
     // Initialize target shape (10×10)
@@ -84,6 +86,7 @@ function init() {
     // Get button references
     runButton = document.getElementById('runBtn');
     trainButton = document.getElementById('trainBtn');
+    clearButton = document.getElementById('clearBtn');
     
     // Initial render
     renderTestCanvas();
@@ -101,6 +104,7 @@ function init() {
     // Set up button handlers
     document.getElementById('trainBtn').addEventListener('click', handleTrain);
     runButton.addEventListener('click', handleRun);
+    clearButton.addEventListener('click', handleClear);
     
     console.log('Initialization complete');
 }
@@ -326,14 +330,12 @@ async function handleTrain() {
     console.log('Starting training...');
     
     try {
-        // Train for 100 steps (can be adjusted)
-        await trainer.train(targetShape, 100, (step, loss, shouldContinue) => {
-            console.log(`Training step ${step}, loss: ${loss.toFixed(6)}`);
+        // Train for 100 iterations (can be adjusted)
+        await trainer.train(targetShape, 100, (iteration, loss, shouldContinue) => {
+            console.log(`Training iteration ${iteration}, loss: ${loss.toFixed(6)}`);
             
-            // Update display every 10 steps
-            if (step % 10 === 0) {
-                renderTestCanvas();
-            }
+            // Update display after each iteration to show the evolved state
+            renderTestCanvas();
             
             return shouldContinue;
         });
@@ -377,6 +379,35 @@ function handleRun() {
         runButton.textContent = 'Stop';
         console.log('CA started');
     }
+}
+
+/**
+ * Handle Clear button click - reset grid to single seed cell at center
+ */
+function handleClear() {
+    if (!grid) {
+        console.error('Grid not initialized');
+        return;
+    }
+    
+    // Stop CA if running
+    if (cellularAutomata && cellularAutomata.getIsRunning()) {
+        cellularAutomata.stop();
+        runButton.textContent = 'Run';
+    }
+    
+    // Clear the grid
+    grid.clear();
+    
+    // Place a single seed cell at the center
+    const centerX = Math.floor(grid.width / 2);
+    const centerY = Math.floor(grid.height / 2);
+    grid.setCell(centerX, centerY, true);
+    
+    // Re-render the test canvas
+    renderTestCanvas();
+    
+    console.log('Grid cleared and reset to single seed cell');
 }
 
 // Initialize when DOM is ready

@@ -12,6 +12,7 @@ class Trainer {
      * @param {number} config.learningRate - Learning rate for optimizer (default: 0.001)
      * @param {string} config.optimizer - Optimizer name: 'adam', 'sgd', 'rmsprop' (default: 'adam')
      * @param {number} config.batchSize - Number of cells to train on per batch (default: 1000)
+     * @param {number} config.caStepsPerIteration - Number of CA steps to run before checking loss (default: 10)
      */
     constructor(grid, neuralNetwork, cellularAutomata = null, config = {}) {
         if (!grid || !neuralNetwork) {
@@ -25,6 +26,7 @@ class Trainer {
         this.learningRate = config.learningRate || 0.001;
         this.optimizerName = config.optimizer || 'adam';
         this.batchSize = config.batchSize || 1000;
+        this.caStepsPerIteration = config.caStepsPerIteration || 10;
         
         this.optimizer = null;
         this.isTraining = false;
@@ -224,20 +226,33 @@ class Trainer {
     }
     
     /**
-     * Train the neural network using a simpler, more practical approach
-     * This method samples cells and trains on their neighbor→output mappings
+     * Reset grid to a single seed cell at the center
+     */
+    _resetToSeedCell() {
+        this.grid.clear();
+        const centerX = Math.floor(this.grid.width / 2);
+        const centerY = Math.floor(this.grid.height / 2);
+        this.grid.setCell(centerX, centerY, true);
+    }
+    
+    /**
+     * Train the neural network by running CA for multiple steps, then training on the final state
      * @param {Array<Array<boolean>>} targetShape - 10×10 boolean array
-     * @param {number} numSteps - Number of training steps to perform
-     * @param {Function} progressCallback - Optional callback (step, loss, shouldContinue)
+     * @param {number} numIterations - Number of training iterations to perform
+     * @param {Function} progressCallback - Optional callback (iteration, loss, shouldContinue)
      * @returns {Promise<Array<number>>} Array of loss values
      */
-    async train(targetShape, numSteps = 100, progressCallback = null) {
+    async train(targetShape, numIterations = 100, progressCallback = null) {
         if (!this.neuralNetwork.isInitialized) {
             throw new Error('Neural network not initialized. Call neuralNetwork.initialize() first.');
         }
         
         if (!targetShape || targetShape.length !== 10 || targetShape[0].length !== 10) {
             throw new Error('Target shape must be a 10×10 boolean array');
+        }
+        
+        if (!this.cellularAutomata) {
+            throw new Error('CellularAutomata instance required for training');
         }
         
         this.isTraining = true;
@@ -247,20 +262,24 @@ class Trainer {
         const centerX = Math.floor(this.grid.width / 2) - 5;
         const centerY = Math.floor(this.grid.height / 2) - 5;
         
-        for (let step = 0; step < numSteps; step++) {
+        for (let iteration = 0; iteration < numIterations; iteration++) {
             if (!this.isTraining) {
                 break; // Training was stopped
             }
             
-            // Method: Sample cells from the center region and train on them
-            // We'll create training examples: (neighbor_input, target_output)
+            // Step 1: Reset grid to single seed cell at center
+            this._resetToSeedCell();
             
-            // First, run one CA update to get current state
-            if (this.cellularAutomata) {
+            // Step 2: Run CA for configured number of steps
+            for (let caStep = 0; caStep < this.caStepsPerIteration; caStep++) {
                 this.cellularAutomata.update();
             }
             
-            // Sample cells from center 10×10 region
+            // Step 3: Compute loss on final state
+            const finalLoss = this.computeLoss(targetShape);
+            
+            // Step 4: Create training examples based on target vs actual state
+            // We'll train the model to output the target state given current neighbor states
             const trainingExamples = [];
             const targetOutputs = [];
             
@@ -269,17 +288,21 @@ class Trainer {
                     const gridX = centerX + tx;
                     const gridY = centerY + ty;
                     
-                    // Get neighbor input for this cell
+                    // Get neighbor input for this cell (from final state)
                     const neighborInput = this.grid.getNeighborInput(gridX, gridY);
                     
                     // Target output: should match target shape
                     const targetOn = targetShape[ty][tx];
                     const targetOutput = new Float32Array(6);
                     targetOutput[0] = targetOn ? 1.0 : 0.0; // on/off
-                    // State vector targets: keep current state (or could be learned)
-                    const currentCell = this.grid.getCell(gridX, gridY);
+                    
+                    // For state vector, we can either:
+                    // Option 1: Keep current state (preserve what evolved)
+                    // Option 2: Set to zero (simpler)
+                    // Option 3: Learn to match some target state vector
+                    // Using Option 2 for simplicity - state vector can be learned later
                     for (let i = 0; i < 5; i++) {
-                        targetOutput[i + 1] = currentCell.stateVector[i];
+                        targetOutput[i + 1] = 0.0; // Zero state vector
                     }
                     
                     trainingExamples.push(neighborInput);
@@ -287,7 +310,7 @@ class Trainer {
                 }
             }
             
-            // Convert to tensors
+            // Step 5: Train on this batch
             const inputTensor = tf.tensor2d(
                 trainingExamples.map(arr => Array.from(arr)),
                 [trainingExamples.length, 30]
@@ -297,23 +320,8 @@ class Trainer {
                 [targetOutputs.length, 6]
             );
             
-            // Train on this batch
+            // Train on this batch using model.fit
             const model = this.neuralNetwork.getModel();
-            
-            const loss = await tf.tidy(async () => {
-                // Forward pass
-                const predictions = model.predict(inputTensor);
-                
-                // Compute loss (MSE)
-                const loss = tf.losses.meanSquaredError(targetTensor, predictions);
-                
-                // Backward pass (automatic with model.fit, but we'll do it manually)
-                // Actually, let's use model.fit for proper training
-                
-                return loss;
-            });
-            
-            // Use model.fit for proper training
             const history = await model.fit(inputTensor, targetTensor, {
                 epochs: 1,
                 batchSize: Math.min(this.batchSize, trainingExamples.length),
@@ -321,9 +329,9 @@ class Trainer {
                 verbose: 0
             });
             
-            const lossValue = history.history.loss[0];
-            losses.push(lossValue);
-            this.lossHistory.push(lossValue);
+            const trainingLoss = history.history.loss[0];
+            losses.push(finalLoss); // Store the final grid loss, not training loss
+            this.lossHistory.push(finalLoss);
             this.trainingStep++;
             
             // Clean up tensors
@@ -334,7 +342,7 @@ class Trainer {
             if (progressCallback) {
                 let shouldContinue = true;
                 try {
-                    shouldContinue = progressCallback(this.trainingStep, lossValue, true) !== false;
+                    shouldContinue = progressCallback(this.trainingStep, finalLoss, true) !== false;
                 } catch (error) {
                     console.error('Error in progress callback:', error);
                 }
