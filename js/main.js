@@ -42,8 +42,8 @@ function init() {
     targetCtx.imageSmoothingEnabled = false;
     testCtx.imageSmoothingEnabled = false;
     
-    // Initialize grid
-    grid = new Grid(10, 10);
+    // Initialize grid (9×9 for test canvas - symmetric about center pixel)
+    grid = new Grid(9, 9);
     
     // Place a single seed cell at the center of the grid
     const centerX = Math.floor(grid.width / 2);
@@ -52,8 +52,8 @@ function init() {
     
     // Initialize neural network
     neuralNetwork = new NeuralNetwork({
-        hiddenSize1: 64,
-        hiddenSize2: 128
+        hiddenSize1: 16,
+        hiddenSize2: 16
     });
     
     // Initialize neural network model
@@ -69,19 +69,19 @@ function init() {
     // Initialize cellular automata
     cellularAutomata = new CellularAutomata(grid, neuralNetwork);
     
-    // Initialize trainer
+    // Initialize trainer with GA parameters (will be read from UI)
     trainer = new Trainer(grid, neuralNetwork, cellularAutomata, {
-        learningRate: 0.001,
-        optimizer: 'adam',
-        batchSize: 100,
-        caStepsPerIteration: 10
+        populationSize: 30,
+        mutationRate: 0.15,
+        mutationStrength: 0.02,
+        eliteCount: 2
     });
     
-    // Initialize target shape (10×10)
+    // Initialize target shape (5×5 - reduced for memory efficiency)
     targetShape = [];
-    for (let y = 0; y < 10; y++) {
+    for (let y = 0; y < 5; y++) {
         targetShape[y] = [];
-        for (let x = 0; x < 10; x++) {
+        for (let x = 0; x < 5; x++) {
             targetShape[y][x] = false;
         }
     }
@@ -116,7 +116,7 @@ function init() {
 }
 
 /**
- * Render the grid state on the test canvas (100×100)
+ * Render the grid state on the test canvas (9×9)
  */
 function renderTestCanvas() {
     // Clear canvas
@@ -144,33 +144,34 @@ function renderTestCanvas() {
 }
 
 /**
- * Render the target shape on the target canvas (10×10)
+ * Render the target shape on the target canvas (5×5, scaled to 10×10 canvas)
  */
 function renderTargetCanvas() {
     // Clear canvas with white background
     targetCtx.fillStyle = '#ffffff';
     targetCtx.fillRect(0, 0, targetCanvas.width, targetCanvas.height);
     
-    // Draw each pixel (each pixel is 1×1 in a 10×10 canvas)
-    for (let y = 0; y < 10; y++) {
-        for (let x = 0; x < 10; x++) {
+    // Draw each cell (scale up 5×5 to 10×10 canvas - 2×2 pixels per cell)
+    const cellSize = 2;
+    for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 5; x++) {
             // Set color based on target shape state
             targetCtx.fillStyle = targetShape[y][x] ? '#000000' : '#ffffff';
-            targetCtx.fillRect(x, y, 1, 1);
+            targetCtx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
         }
     }
     
-    // Draw grid lines for better visibility (optional, but helpful)
+    // Draw grid lines for better visibility
     targetCtx.strokeStyle = '#e0e0e0';
     targetCtx.lineWidth = 0.1;
-    for (let i = 0; i <= 10; i++) {
+    for (let i = 0; i <= 5; i++) {
         targetCtx.beginPath();
-        targetCtx.moveTo(i, 0);
-        targetCtx.lineTo(i, 10);
+        targetCtx.moveTo(i * cellSize, 0);
+        targetCtx.lineTo(i * cellSize, 10);
         targetCtx.stroke();
         targetCtx.beginPath();
-        targetCtx.moveTo(0, i);
-        targetCtx.lineTo(10, i);
+        targetCtx.moveTo(0, i * cellSize);
+        targetCtx.lineTo(10, i * cellSize);
         targetCtx.stroke();
     }
 }
@@ -189,27 +190,26 @@ function handleTargetCanvasClick(event) {
     const canvasX = x * scaleX;
     const canvasY = y * scaleY;
     
-    // Calculate which pixel was clicked (10×10 grid)
-    const pixelWidth = targetCanvas.width / 10;
-    const pixelHeight = targetCanvas.height / 10;
+    // Calculate which cell was clicked (5×5 grid, scaled to 10×10 canvas)
+    const cellSize = targetCanvas.width / 5;
     
-    const pixelX = Math.floor(canvasX / pixelWidth);
-    const pixelY = Math.floor(canvasY / pixelHeight);
+    const cellX = Math.floor(canvasX / cellSize);
+    const cellY = Math.floor(canvasY / cellSize);
     
     // Ensure coordinates are within bounds
-    if (pixelX >= 0 && pixelX < 10 && pixelY >= 0 && pixelY < 10) {
-        // Toggle the pixel state
-        targetShape[pixelY][pixelX] = !targetShape[pixelY][pixelX];
+    if (cellX >= 0 && cellX < 5 && cellY >= 0 && cellY < 5) {
+        // Toggle the cell state
+        targetShape[cellY][cellX] = !targetShape[cellY][cellX];
         
         // Re-render the target canvas
         renderTargetCanvas();
         
-        console.log(`Toggled pixel at (${pixelX}, ${pixelY})`);
+        console.log(`Toggled cell at (${cellX}, ${cellY})`);
     }
 }
 
 /**
- * Get the target shape as a 10×10 boolean array
+ * Get the target shape as a 5×5 boolean array
  * @returns {Array} 2D array of booleans
  */
 function getTargetShape() {
@@ -241,15 +241,17 @@ function calculateAndDisplayLoss() {
         return;
     }
     
-    // Extract center 10×10 region from 100×100 grid
-    const centerX = Math.floor(grid.width / 2) - 5;
-    const centerY = Math.floor(grid.height / 2) - 5;
+    // Extract center 5×5 region from 9×9 grid (centered at pixel 4,4)
+    const centerX = Math.floor(grid.width / 2) - 2;
+    const centerY = Math.floor(grid.height / 2) - 2;
     
     let totalLoss = 0;
     let cellCount = 0;
+    let error = 0;
+    let totalError = 0;
     
-    for (let ty = 0; ty < 10; ty++) {
-        for (let tx = 0; tx < 10; tx++) {
+    for (let ty = 0; ty < 5; ty++) {
+        for (let tx = 0; tx < 5; tx++) {
             const gridX = centerX + tx;
             const gridY = centerY + ty;
             
@@ -258,14 +260,15 @@ function calculateAndDisplayLoss() {
             const actualValue = cell.on ? 1.0 : 0.0;
             
             // Mean squared error
-            const error = targetValue - actualValue;
+            error = targetValue - actualValue;
+            totalError += error;
             totalLoss += error * error;
             cellCount++;
         }
     }
-    
+    console.log("totalError: " + totalError.toFixed(6));
     const loss = totalLoss / cellCount;
-    lossValueElement.textContent = loss.toFixed(6);
+    lossValueElement.textContent = loss.toFixed(6) + "    totalError: " + totalError.toFixed(6);
 }
 
 /**
@@ -355,7 +358,17 @@ async function handleTrain() {
         trainer.stopTraining();
         trainButton.textContent = 'Train';
         trainButton.disabled = false;
-        console.log('Training stopped');
+        console.log('Training stopped - current best performer is now active');
+        
+        // The best network is already applied (updated after each generation)
+        // Reset grid to seed and render to show current best
+        grid.clear();
+        const centerX = Math.floor(grid.width / 2);
+        const centerY = Math.floor(grid.height / 2);
+        grid.setCell(centerX, centerY, true);
+        renderTestCanvas();
+        calculateAndDisplayLoss();
+        
         return;
     }
     
@@ -372,7 +385,7 @@ async function handleTrain() {
     }
     
     if (!hasTarget) {
-        alert('Please draw a target shape in the 10×10 editor first!');
+        alert('Please draw a target shape in the 5×5 editor first!');
         return;
     }
     
@@ -385,31 +398,67 @@ async function handleTrain() {
     // Start training
     trainButton.textContent = 'Training...';
     trainButton.disabled = true;
+    trainButton.textContent = 'Training...';
     console.log('Starting training...');
     
     try {
-        // Train for 100 iterations (can be adjusted)
-        await trainer.train(targetShape, 100, (iteration, loss, shouldContinue) => {
-            console.log(`Training iteration ${iteration}, loss: ${loss.toFixed(6)}`);
+        // Get number of generations from UI
+        const numGenerationsInput = document.getElementById('numGenerations');
+        const numGenerations = numGenerationsInput ? parseInt(numGenerationsInput.value, 10) : 100;
+        
+        // Get genSteps from UI for running the best performer
+        const genSteps = genStepsDropdown ? parseInt(genStepsDropdown.value, 10) : 50;
+        
+        // Train for specified number of generations
+        await trainer.train(targetShape, numGenerations, (generation, loss, shouldContinue) => {
+            console.log(`Training generation ${generation}/${numGenerations}, loss: ${loss.toFixed(6)}`);
             
-            // Update display after each iteration to show the evolved state
+            // Update UI to show progress
+            if (lossValueElement) {
+                lossValueElement.textContent = loss.toFixed(6);
+            }
+            
+            // Run the best performer from this generation on the test grid
+            // The best network is already applied to the main network by Trainer
+            // Reset grid to seed cell
+            grid.clear();
+            const centerX = Math.floor(grid.width / 2);
+            const centerY = Math.floor(grid.height / 2);
+            grid.setCell(centerX, centerY, true);
+            
+            // Run CA for genSteps to show evolution
+            for (let step = 0; step < genSteps; step++) {
+                cellularAutomata.update();
+            }
+            
+            // Render the result on test canvas
             renderTestCanvas();
+            
+            // Calculate and display loss
+            calculateAndDisplayLoss();
+            
+            // Update button text to show progress (button says "Stop" when training)
+            trainButton.textContent = `Stop (Gen ${generation}/${numGenerations})`;
             
             return shouldContinue;
         });
         
         console.log('Training completed');
+        trainButton.textContent = 'Train';
+        trainButton.disabled = false;
         const lossHistory = trainer.getLossHistory();
         if (lossHistory.length > 0) {
-            console.log(`Final loss: ${lossHistory[lossHistory.length - 1].toFixed(6)}`);
+            const finalLoss = lossHistory[lossHistory.length - 1];
+            console.log(`Final loss: ${finalLoss.toFixed(6)}`);
+            if (lossValueElement) {
+                lossValueElement.textContent = finalLoss.toFixed(6);
+            }
         }
     } catch (error) {
         console.error('Training error:', error);
         alert('Training failed: ' + error.message);
-    } finally {
         trainButton.textContent = 'Train';
         trainButton.disabled = false;
-        renderTestCanvas();
     }
 }
 

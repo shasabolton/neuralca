@@ -1,8 +1,8 @@
 /**
  * NeuralNetwork.js - TensorFlow.js model wrapper for Neural Cellular Automata
- * Architecture: 30 input → hidden1 (ReLU) → hidden2 (ReLU) → 6 output
- * Input: 30 values (5 neighbors × 6 values: 1 on/off + 5 state vector floats)
- * Output: 6 values (1 on/off + 5 state vector floats)
+ * Architecture: 15 input → hidden1 (ReLU) → hidden2 (ReLU) → 3 output
+ * Input: 15 values (5 neighbors × 3 values: 1 on/off + 2 state vector floats)
+ * Output: 3 values (1 on/off + 2 state vector floats)
  */
 class NeuralNetwork {
     /**
@@ -12,8 +12,8 @@ class NeuralNetwork {
      * @param {number} config.hiddenSize2 - Size of second hidden layer (default: 128)
      */
     constructor(config = {}) {
-        this.hiddenSize1 = config.hiddenSize1 || 32;
-        this.hiddenSize2 = config.hiddenSize2 || 32;
+        this.hiddenSize1 = config.hiddenSize1 || 16;
+        this.hiddenSize2 = config.hiddenSize2 || 16;
         this.model = null;
         this.isInitialized = false;
     }
@@ -36,11 +36,12 @@ class NeuralNetwork {
         // Create sequential model
         this.model = tf.sequential({
             layers: [
-                // Input layer: 30 neurons (5 neighbors × 6 values)
+                // Input layer: 15 neurons (5 neighbors × 3 values)
                 tf.layers.dense({
-                    inputShape: [30],
+                    inputShape: [15],
                     units: this.hiddenSize1,
                     activation: 'relu',
+                    kernelRegularizer: tf.regularizers.l2({l2: 0.0001}), // L2 regularization
                     name: 'hidden1'
                 }),
                 
@@ -48,12 +49,19 @@ class NeuralNetwork {
                 tf.layers.dense({
                     units: this.hiddenSize2,
                     activation: 'relu',
+                    kernelRegularizer: tf.regularizers.l2({l2: 0.0001}), // L2 regularization
                     name: 'hidden2'
                 }),
                 
-                // Output layer: 6 neurons (1 on/off + 5 state vector floats)
+                // Dropout layer to prevent overfitting (only during training)
+                tf.layers.dropout({
+                    rate: 0.1, // 10% dropout
+                    name: 'dropout'
+                }),
+                
+                // Output layer: 3 neurons (1 on/off + 2 state vector floats)
                 tf.layers.dense({
-                    units: 6,
+                    units: 3,
                     activation: 'linear', // We'll apply sigmoid to first output separately
                     name: 'output'
                 })
@@ -68,13 +76,13 @@ class NeuralNetwork {
         });
         
         this.isInitialized = true;
-        console.log(`Neural network initialized: 30 → ${this.hiddenSize1} → ${this.hiddenSize2} → 6`);
+        console.log(`Neural network initialized: 15 → ${this.hiddenSize1} → ${this.hiddenSize2} → 3`);
     }
     
     /**
      * Forward pass: predict new cell state from neighbor states
-     * @param {Float32Array|Array|tf.Tensor} input - 30-element input array (5 neighbors × 6 values)
-     * @returns {Object} { on: boolean, stateVector: Float32Array(5) }
+     * @param {Float32Array|Array|tf.Tensor} input - 15-element input array (5 neighbors × 3 values)
+     * @returns {Object} { on: boolean, stateVector: Float32Array(2) }
      */
     predict(input) {
         if (!this.isInitialized) {
@@ -86,9 +94,9 @@ class NeuralNetwork {
         if (input instanceof tf.Tensor) {
             inputTensor = input;
         } else {
-            // Ensure input is a 2D tensor [batch_size, 30]
+            // Ensure input is a 2D tensor [batch_size, 15]
             const inputArray = Array.isArray(input) ? input : Array.from(input);
-            inputTensor = tf.tensor2d([inputArray], [1, 30]);
+            inputTensor = tf.tensor2d([inputArray], [1, 15]);
         }
         
         // Run forward pass
@@ -106,8 +114,8 @@ class NeuralNetwork {
         const on = onValue > 0.5;
         
         // Apply tanh to state vector to keep values in [-1, 1] range
-        const stateVector = new Float32Array(5);
-        for (let i = 0; i < 5; i++) {
+        const stateVector = new Float32Array(2);
+        for (let i = 0; i < 2; i++) {
             stateVector[i] = Math.tanh(outputValues[i + 1]);
         }
         
@@ -119,8 +127,8 @@ class NeuralNetwork {
     
     /**
      * Batch predict: predict multiple cell states at once (more efficient)
-     * @param {Array<Float32Array>|tf.Tensor} inputs - Array of 30-element input arrays or a 2D tensor
-     * @returns {Array<Object>} Array of { on: boolean, stateVector: Float32Array(5) }
+     * @param {Array<Float32Array>|tf.Tensor} inputs - Array of 15-element input arrays or a 2D tensor
+     * @returns {Array<Object>} Array of { on: boolean, stateVector: Float32Array(2) }
      */
     predictBatch(inputs) {
         if (!this.isInitialized) {
@@ -132,11 +140,11 @@ class NeuralNetwork {
         if (inputs instanceof tf.Tensor) {
             inputTensor = inputs;
         } else {
-            // Convert array of arrays to 2D tensor [batch_size, 30]
+            // Convert array of arrays to 2D tensor [batch_size, 15]
             const inputArray = inputs.map(arr => 
                 Array.isArray(arr) ? arr : Array.from(arr)
             );
-            inputTensor = tf.tensor2d(inputArray, [inputs.length, 30]);
+            inputTensor = tf.tensor2d(inputArray, [inputs.length, 15]);
         }
         
         // Run forward pass
@@ -153,15 +161,15 @@ class NeuralNetwork {
         // Process outputs
         const results = [];
         for (let i = 0; i < batchSize; i++) {
-            const baseIdx = i * 6;
+            const baseIdx = i * 3;
             
             // Apply sigmoid to on/off value
             const onValue = 1 / (1 + Math.exp(-outputValues[baseIdx]));
             const on = onValue > 0.5;
             
             // Apply tanh to state vector
-            const stateVector = new Float32Array(5);
-            for (let j = 0; j < 5; j++) {
+            const stateVector = new Float32Array(2);
+            for (let j = 0; j < 2; j++) {
                 stateVector[j] = Math.tanh(outputValues[baseIdx + j + 1]);
             }
             

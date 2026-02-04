@@ -179,7 +179,7 @@ class CellularAutomata {
      * @param {number} x - Column index
      * @param {number} y - Row index
      * @param {boolean} on - On/off state
-     * @param {Float32Array} stateVector - Optional state vector (5 floats)
+     * @param {Float32Array} stateVector - Optional state vector (2 floats)
      */
     setCell(x, y, on, stateVector = null) {
         this.grid.setCell(x, y, on, stateVector);
@@ -189,10 +189,87 @@ class CellularAutomata {
      * Get a cell state
      * @param {number} x - Column index
      * @param {number} y - Row index
-     * @returns {Object} Cell state { on: boolean, stateVector: Float32Array(5) }
+     * @returns {Object} Cell state { on: boolean, stateVector: Float32Array(2) }
      */
     getCell(x, y) {
         return this.grid.getCell(x, y);
+    }
+    
+    /**
+     * Perform a differentiable CA update step using tensors with torus boundary conditions
+     * This runs inside TensorFlow's computation graph for gradient tracking
+     * NOTE: Do NOT use tf.tidy() here - gradients need intermediate tensors to stay alive
+     * @param {tf.Tensor} gridTensor - Current grid state tensor [height, width, 3]
+     * @returns {tf.Tensor} New grid state tensor [height, width, 3]
+     */
+    updateTensor(gridTensor) {
+        if (!this.neuralNetwork.isInitialized) {
+            throw new Error('Neural network not initialized. Call neuralNetwork.initialize() first.');
+        }
+        
+        const model = this.neuralNetwork.getModel();
+        const [height, width] = gridTensor.shape;
+        const numCells = height * width;
+        
+        // Torus boundary conditions: pad with wrapped edges
+        // Top edge wraps to bottom, bottom wraps to top, left wraps to right, right wraps to left
+        
+        // First, pad top/bottom with wrapped rows
+        const topRow = gridTensor.slice([height - 1, 0, 0], [1, width, 3]); // Last row wraps to top
+        const bottomRow = gridTensor.slice([0, 0, 0], [1, width, 3]); // First row wraps to bottom
+        const topBottomPadded = tf.concat([topRow, gridTensor, bottomRow], 0); // [height+2, width, 3]
+        
+        // Now pad left/right with wrapped columns from the top-bottom-padded grid
+        const leftCol = topBottomPadded.slice([0, width - 1, 0], [height + 2, 1, 3]); // Last column wraps to left
+        const rightCol = topBottomPadded.slice([0, 0, 0], [height + 2, 1, 3]); // First column wraps to right
+        
+        // Left padding: right column, right padding: left column
+        const paddedGrid = tf.concat([leftCol, topBottomPadded, rightCol], 1); // [height+2, width+2, 3]
+        
+        // Extract neighbor regions efficiently
+        // We'll build the input batch by extracting and concatenating neighbor regions
+        const inputs = [];
+        
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                // Get neighbors from padded grid (indices are shifted by 1 due to padding)
+                const py = y + 1; // Padded y coordinate
+                const px = x + 1; // Padded x coordinate
+                
+                // Extract neighbors: top, bottom, left, right, self
+                const top = paddedGrid.slice([py - 1, px, 0], [1, 1, 3]).reshape([3]);
+                const bottom = paddedGrid.slice([py + 1, px, 0], [1, 1, 3]).reshape([3]);
+                const left = paddedGrid.slice([py, px - 1, 0], [1, 1, 3]).reshape([3]);
+                const right = paddedGrid.slice([py, px + 1, 0], [1, 1, 3]).reshape([3]);
+                const self = paddedGrid.slice([py, px, 0], [1, 1, 3]).reshape([3]);
+                
+                // Concatenate neighbor states into 15-element input
+                const input = tf.concat([top, bottom, left, right, self], 0); // [15]
+                inputs.push(input);
+            }
+        }
+        
+        // Batch predict: [height*width, 15] -> [height*width, 3]
+        const inputBatch = tf.stack(inputs); // [height*width, 15]
+        const predictions = model.apply(inputBatch); // [height*width, 3]
+        
+        // Apply activations: sigmoid to first channel (on/off), tanh to rest (state vector)
+        const onOffRaw = predictions.slice([0, 0], [numCells, 1]);
+        const stateVecRaw = predictions.slice([0, 1], [numCells, 2]);
+        const onOff = tf.sigmoid(onOffRaw); // [height*width, 1]
+        const stateVec = tf.tanh(stateVecRaw); // [height*width, 2]
+        const newStates = tf.concat([onOff, stateVec], 1); // [height*width, 3]
+        
+        // Clean up intermediate tensors
+        paddedGrid.dispose();
+        topRow.dispose();
+        bottomRow.dispose();
+        topBottomPadded.dispose();
+        leftCol.dispose();
+        rightCol.dispose();
+        
+        // Reshape back to [height, width, 3]
+        return newStates.reshape([height, width, 3]);
     }
 }
 

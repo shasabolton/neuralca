@@ -1,9 +1,9 @@
 /**
- * Grid.js - Manages 100×100 cell states for Neural Cellular Automata
- * Each cell stores: { on: boolean, stateVector: Float32Array(5) }
+ * Grid.js - Manages 9×9 cell states for Neural Cellular Automata
+ * Each cell stores: { on: boolean, stateVector: Float32Array(2) }
  */
 class Grid {
-    constructor(width = 100, height = 100) {
+    constructor(width = 9, height = 9) {
         this.width = width;
         this.height = height;
         this.cells = [];
@@ -14,27 +14,23 @@ class Grid {
             for (let x = 0; x < width; x++) {
                 this.cells[y][x] = {
                     on: false,
-                    stateVector: new Float32Array(5) // 5 floats initialized to 0
+                    stateVector: new Float32Array(2) // 2 floats initialized to 0
                 };
             }
         }
     }
     
     /**
-     * Get cell state at position (x, y)
+     * Get cell state at position (x, y) with torus (wrap-around) boundary conditions
      * @param {number} x - Column index
      * @param {number} y - Row index
-     * @returns {Object} Cell state { on: boolean, stateVector: Float32Array(5) }
+     * @returns {Object} Cell state { on: boolean, stateVector: Float32Array(2) }
      */
     getCell(x, y) {
-        if (x < 0 || x >= this.width || y < 0 || y >= this.height) {
-            // Return boundary cell (off with zero state vector)
-            return {
-                on: false,
-                stateVector: new Float32Array(5)
-            };
-        }
-        return this.cells[y][x];
+        // Torus boundary conditions: wrap around
+        const wrappedX = ((x % this.width) + this.width) % this.width;
+        const wrappedY = ((y % this.height) + this.height) % this.height;
+        return this.cells[wrappedY][wrappedX];
     }
     
     /**
@@ -50,7 +46,7 @@ class Grid {
         }
         
         this.cells[y][x].on = on;
-        if (stateVector !== null && stateVector.length === 5) {
+        if (stateVector !== null && stateVector.length === 2) {
             this.cells[y][x].stateVector.set(stateVector);
         }
     }
@@ -74,21 +70,21 @@ class Grid {
     
     /**
      * Get neighbor data as a flat array for neural network input
-     * Returns 30 values: 5 neighbors × 6 values (1 on/off + 5 state vector floats)
+     * Returns 15 values: 5 neighbors × 3 values (1 on/off + 2 state vector floats)
      * @param {number} x - Column index
      * @param {number} y - Row index
-     * @returns {Float32Array} 30-element array for neural network input
+     * @returns {Float32Array} 15-element array for neural network input
      */
     getNeighborInput(x, y) {
         const neighbors = this.getNeighbors(x, y);
-        const input = new Float32Array(30);
+        const input = new Float32Array(15);
         
         let idx = 0;
         for (const neighbor of neighbors) {
             // Add on/off state (0 or 1)
             input[idx++] = neighbor.on ? 1.0 : 0.0;
-            // Add 5 state vector floats
-            for (let i = 0; i < 5; i++) {
+            // Add 2 state vector floats
+            for (let i = 0; i < 2; i++) {
                 input[idx++] = neighbor.stateVector[i];
             }
         }
@@ -131,6 +127,44 @@ class Grid {
             }
         }
         return state;
+    }
+    
+    /**
+     * Convert grid state to TensorFlow tensor
+     * Returns tensor of shape [height, width, 3] where channels are: [on/off, stateVector[2]]
+     * @returns {tf.Tensor} Tensor of shape [height, width, 3]
+     */
+    toTensor() {
+        const data = [];
+        for (let y = 0; y < this.height; y++) {
+            for (let x = 0; x < this.width; x++) {
+                const cell = this.cells[y][x];
+                data.push(
+                    cell.on ? 1.0 : 0.0,  // on/off
+                    cell.stateVector[0],   // state vector components
+                    cell.stateVector[1]
+                );
+            }
+        }
+        return tf.tensor3d(data, [this.height, this.width, 3]);
+    }
+    
+    /**
+     * Update grid state from TensorFlow tensor
+     * @param {tf.Tensor} tensor - Tensor of shape [height, width, 3]
+     */
+    fromTensor(tensor) {
+        const data = tensor.dataSync();
+        let idx = 0;
+        for (let y = 0; y < this.height; y++) {
+            for (let x = 0; x < this.width; x++) {
+                const on = data[idx++] > 0.5;
+                const stateVector = new Float32Array(2);
+                stateVector[0] = data[idx++];
+                stateVector[1] = data[idx++];
+                this.setCell(x, y, on, stateVector);
+            }
+        }
     }
 }
 

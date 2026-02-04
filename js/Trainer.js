@@ -1,18 +1,18 @@
 /**
  * Trainer.js - Training system for Neural Cellular Automata
- * Implements supervised learning to match target shapes using TensorFlow.js optimizer
+ * Uses Genetic Algorithm for training instead of backpropagation
  */
 class Trainer {
     /**
      * Create a new Trainer instance
      * @param {Grid} grid - The grid instance to train on
      * @param {NeuralNetwork} neuralNetwork - The neural network to train
-     * @param {CellularAutomata} cellularAutomata - The CA instance (optional, for updates during training)
+     * @param {CellularAutomata} cellularAutomata - The CA instance (required for training)
      * @param {Object} config - Configuration object
-     * @param {number} config.learningRate - Learning rate for optimizer (default: 0.001)
-     * @param {string} config.optimizer - Optimizer name: 'adam', 'sgd', 'rmsprop' (default: 'adam')
-     * @param {number} config.batchSize - Number of cells to train on per batch (default: 1000)
-     * @param {number} config.caStepsPerIteration - Number of CA steps to run before checking loss (default: 10)
+     * @param {number} config.populationSize - Population size for GA (default: 30)
+     * @param {number} config.mutationRate - Mutation rate for GA (default: 0.15)
+     * @param {number} config.mutationStrength - Mutation strength for GA (default: 0.02)
+     * @param {number} config.eliteCount - Number of elite individuals to preserve (default: 2)
      */
     constructor(grid, neuralNetwork, cellularAutomata = null, config = {}) {
         if (!grid || !neuralNetwork) {
@@ -23,69 +23,62 @@ class Trainer {
         this.neuralNetwork = neuralNetwork;
         this.cellularAutomata = cellularAutomata;
         
-        this.learningRate = config.learningRate || 0.001;
-        this.optimizerName = config.optimizer || 'adam';
-        this.batchSize = config.batchSize || 1000;
-        this.caStepsPerIteration = config.caStepsPerIteration || 10;
+        // GA parameters
+        this.populationSize = config.populationSize || 30;
+        this.mutationRate = config.mutationRate || 0.15;
+        this.mutationStrength = config.mutationStrength || 0.02;
+        this.eliteCount = config.eliteCount || 2;
         
-        this.optimizer = null;
         this.isTraining = false;
         this.trainingStep = 0;
         this.lossHistory = [];
         
-        // Initialize optimizer
-        this._initializeOptimizer();
+        // Initialize genetic algorithm
+        this.geneticAlgorithm = new GeneticAlgorithm(
+            grid,
+            neuralNetwork,
+            cellularAutomata,
+            {
+                populationSize: this.populationSize,
+                mutationRate: this.mutationRate,
+                mutationStrength: this.mutationStrength,
+                eliteCount: this.eliteCount
+            }
+        );
     }
     
+    
     /**
-     * Initialize the TensorFlow.js optimizer
+     * Reset grid to a single seed cell at the center
      */
-    _initializeOptimizer() {
-        if (typeof tf === 'undefined') {
-            throw new Error('TensorFlow.js is not loaded. Please include the TensorFlow.js CDN script.');
-        }
-        
-        switch (this.optimizerName.toLowerCase()) {
-            case 'adam':
-                this.optimizer = tf.train.adam(this.learningRate);
-                break;
-            case 'sgd':
-                this.optimizer = tf.train.sgd(this.learningRate);
-                break;
-            case 'rmsprop':
-                this.optimizer = tf.train.rmsprop(this.learningRate);
-                break;
-            default:
-                throw new Error(`Unknown optimizer: ${this.optimizerName}`);
-        }
-        
-        // Set optimizer in neural network
-        this.neuralNetwork.setOptimizer(this.optimizerName, {
-            learningRate: this.learningRate
-        });
+    _resetToSeedCell() {
+        this.grid.clear();
+        const centerX = Math.floor(this.grid.width / 2);
+        const centerY = Math.floor(this.grid.height / 2);
+        this.grid.setCell(centerX, centerY, true);
     }
     
     /**
      * Compute loss between current grid state and target shape
-     * The target shape is 10×10, so we extract the center 10×10 region from the 100×100 grid
-     * @param {Array<Array<boolean>>} targetShape - 10×10 boolean array representing target shape
+     * The target shape is 5×5, so we extract the center 5×5 region from the 9×9 grid
+     * @param {Array<Array<boolean>>} targetShape - 5×5 boolean array representing target shape
      * @returns {number} Loss value (mean squared error)
      */
     computeLoss(targetShape) {
-        if (!targetShape || targetShape.length !== 10 || targetShape[0].length !== 10) {
-            throw new Error('Target shape must be a 10×10 boolean array');
+        if (!targetShape || targetShape.length !== 5 || targetShape[0].length !== 5) {
+            throw new Error('Target shape must be a 5×5 boolean array');
         }
         
-        // Extract center 10×10 region from 100×100 grid
-        // Center region: x from 45 to 54, y from 45 to 54
-        const centerX = Math.floor(this.grid.width / 2) - 5;
-        const centerY = Math.floor(this.grid.height / 2) - 5;
+        // Extract center 5×5 region from 9×9 grid (centered at pixel 4,4)
+        // 5×5 region spans from (2,2) to (6,6) - symmetric about center
+        const centerX = Math.floor(this.grid.width / 2) - 2;
+        const centerY = Math.floor(this.grid.height / 2) - 2;
         
         let totalLoss = 0;
         let cellCount = 0;
         
-        for (let ty = 0; ty < 10; ty++) {
-            for (let tx = 0; tx < 10; tx++) {
+        for (let ty = 0; ty < 5; ty++) {
+            for (let tx = 0; tx < 5; tx++) {
                 const gridX = centerX + tx;
                 const gridY = centerY + ty;
                 
@@ -104,268 +97,164 @@ class Trainer {
     }
     
     /**
-     * Compute loss using TensorFlow.js tensors (for gradient computation)
-     * @param {Array<Array<boolean>>} targetShape - 10×10 boolean array
+     * Compute loss tensor for a grid tensor (differentiable)
+     * Compares center 5×5 region to target shape
+     * NOTE: Do NOT dispose intermediate tensors - they're needed for gradients
+     * @param {tf.Tensor} gridTensor - Grid state tensor [height, width, 3]
+     * @param {tf.Tensor} targetTensor - Target tensor [5, 5]
      * @returns {tf.Scalar} Loss tensor
      */
-    computeLossTensor(targetShape) {
-        if (!targetShape || targetShape.length !== 10 || targetShape[0].length !== 10) {
-            throw new Error('Target shape must be a 10×10 boolean array');
-        }
+    _computeLossTensor(gridTensor, targetTensor) {
+        // Extract center 5×5 region from 9×9 grid (centered at pixel 4,4)
+        const centerX = Math.floor(this.grid.width / 2) - 2;
+        const centerY = Math.floor(this.grid.height / 2) - 2;
         
-        // Extract center 10×10 region from grid
-        const centerX = Math.floor(this.grid.width / 2) - 5;
-        const centerY = Math.floor(this.grid.height / 2) - 5;
+        // Extract center 5×5 region from grid tensor
+        // Get only the on/off channel (channel 0)
+        const centerRegion = gridTensor.slice([centerY, centerX, 0], [5, 5, 1]);
+        const centerOnOff = centerRegion.reshape([5, 5]);
         
-        // Build target tensor (10×10)
-        const targetArray = [];
-        for (let ty = 0; ty < 10; ty++) {
-            for (let tx = 0; tx < 10; tx++) {
-                targetArray.push(targetShape[ty][tx] ? 1.0 : 0.0);
-            }
-        }
-        const targetTensor = tf.tensor2d(targetArray, [10, 10]);
+        // Apply sigmoid to get probabilities (in case values aren't already in [0,1])
+        const probabilities = tf.sigmoid(centerOnOff);
         
-        // Build actual tensor from grid (10×10)
-        const actualArray = [];
-        for (let ty = 0; ty < 10; ty++) {
-            for (let tx = 0; tx < 10; tx++) {
-                const gridX = centerX + tx;
-                const gridY = centerY + ty;
-                const cell = this.grid.getCell(gridX, gridY);
-                actualArray.push(cell.on ? 1.0 : 0.0);
-            }
-        }
-        const actualTensor = tf.tensor2d(actualArray, [10, 10]);
+        // Use binary cross-entropy instead of MSE for better gradient flow
+        // Clip probabilities to avoid log(0)
+        const clippedProbs = probabilities.clipByValue(1e-7, 1 - 1e-7);
         
-        // Compute mean squared error
-        const loss = tf.losses.meanSquaredError(targetTensor, actualTensor);
+        // Binary cross-entropy: -[y*log(p) + (1-y)*log(1-p)]
+        const bce = targetTensor.mul(clippedProbs.log())
+            .add(targetTensor.mul(-1).add(1).mul(clippedProbs.mul(-1).add(1).log()))
+            .mul(-1)
+            .mean();
         
-        // Clean up intermediate tensors
-        targetTensor.dispose();
-        actualTensor.dispose();
+        // Add penalty if all cells are off when target has some on
+        // This prevents the model from learning the "all off" solution
+        const targetSum = targetTensor.sum();
+        const probSum = probabilities.sum();
+        const minProbSum = targetSum.mul(0.5); // At least 50% of target sum
+        const sumPenalty = tf.maximum(0, minProbSum.sub(probSum)).mul(0.1);
         
-        return loss;
+        // Don't dispose intermediate tensors - they're needed for gradient computation
+        // TensorFlow will manage cleanup after gradients are computed
+        
+        return bce.add(sumPenalty);
     }
     
     /**
-     * Perform a single training step
-     * This updates the neural network weights to minimize the loss
-     * @param {Array<Array<boolean>>} targetShape - 10×10 boolean array representing target shape
-     * @param {Function} progressCallback - Optional callback function called with (step, loss)
-     * @returns {Promise<number>} Loss value after training step
-     */
-    async trainStep(targetShape, progressCallback = null) {
-        if (!this.neuralNetwork.isInitialized) {
-            throw new Error('Neural network not initialized. Call neuralNetwork.initialize() first.');
-        }
-        
-        if (!targetShape || targetShape.length !== 10 || targetShape[0].length !== 10) {
-            throw new Error('Target shape must be a 10×10 boolean array');
-        }
-        
-        const model = this.neuralNetwork.getModel();
-        const variables = model.trainableWeights;
-        
-        // Compute loss and gradients
-        const lossValue = tf.tidy(() => {
-            // Get current loss
-            const loss = this.computeLossTensor(targetShape);
-            
-            // Compute gradients
-            const grads = tf.grad(() => {
-                // We need to compute loss as a function of model parameters
-                // Since the model affects the grid through CA updates, we need to:
-                // 1. Run one CA update step
-                // 2. Compute loss on the updated grid
-                
-                // For now, we'll use a simpler approach:
-                // Compute loss based on current grid state after running CA update
-                // But we need to track gradients through the CA update
-                
-                // Actually, a more practical approach for neural CA training:
-                // We'll sample cells and compute loss on their predicted outputs
-                // vs what they should be based on the target shape
-                
-                // For this implementation, we'll use a direct loss on the grid state
-                // after running the CA update, which requires tracking gradients through
-                // the entire update process. This is complex, so we'll use a simpler method:
-                
-                // Sample approach: compute loss on current state, then update CA,
-                // and use the difference as a signal
-                
-                return this.computeLossTensor(targetShape);
-            });
-            
-            // Apply gradients
-            this.optimizer.applyGradients(
-                variables.map((v, i) => ({
-                    tensor: v,
-                    grad: grads[i] || tf.zerosLike(v)
-                }))
-            );
-            
-            return loss;
-        });
-        
-        // Get loss value
-        const loss = await lossValue.data();
-        const lossScalar = loss[0];
-        lossValue.dispose();
-        
-        // Update training step counter
-        this.trainingStep++;
-        this.lossHistory.push(lossScalar);
-        
-        // Call progress callback if provided
-        if (progressCallback) {
-            progressCallback(this.trainingStep, lossScalar);
-        }
-        
-        return lossScalar;
-    }
-    
-    /**
-     * Reset grid to a single seed cell at the center
-     */
-    _resetToSeedCell() {
-        this.grid.clear();
-        const centerX = Math.floor(this.grid.width / 2);
-        const centerY = Math.floor(this.grid.height / 2);
-        this.grid.setCell(centerX, centerY, true);
-    }
-    
-    /**
-     * Train the neural network by running CA for multiple steps, then training on the final state
-     * @param {Array<Array<boolean>>} targetShape - 10×10 boolean array
-     * @param {number} numIterations - Number of training iterations to perform
-     * @param {Function} progressCallback - Optional callback (iteration, loss, shouldContinue)
+     * Train the neural network using Genetic Algorithm
+     * 
+     * @param {Array<Array<boolean>>} targetShape - 5×5 boolean array
+     * @param {number} numGenerations - Number of generations to evolve
+     * @param {Function} progressCallback - Optional callback (generation, loss, shouldContinue)
      * @returns {Promise<Array<number>>} Array of loss values
      */
-    async train(targetShape, numIterations = 100, progressCallback = null) {
+    async train(targetShape, numGenerations = 100, progressCallback = null) {
         if (!this.neuralNetwork.isInitialized) {
             throw new Error('Neural network not initialized. Call neuralNetwork.initialize() first.');
         }
         
-        if (!targetShape || targetShape.length !== 10 || targetShape[0].length !== 10) {
-            throw new Error('Target shape must be a 10×10 boolean array');
+        if (!targetShape || targetShape.length !== 5 || targetShape[0].length !== 5) {
+            throw new Error('Target shape must be a 5×5 boolean array');
         }
         
         if (!this.cellularAutomata) {
             throw new Error('CellularAutomata instance required for training');
         }
         
+        // Get genSteps from UI
+        const genStepsDropdown = document.getElementById('genSteps');
+        const genSteps = genStepsDropdown ? parseInt(genStepsDropdown.value, 10) : 50;
+        
+        // Update GA parameters from UI if available
+        const populationInput = document.getElementById('populationSize');
+        const mutationRateInput = document.getElementById('mutationRate');
+        const mutationStrengthInput = document.getElementById('mutationStrength');
+        const eliteCountInput = document.getElementById('eliteCount');
+        
+        if (populationInput) {
+            this.populationSize = parseInt(populationInput.value, 10);
+        }
+        if (mutationRateInput) {
+            this.mutationRate = parseFloat(mutationRateInput.value);
+        }
+        if (mutationStrengthInput) {
+            this.mutationStrength = parseFloat(mutationStrengthInput.value);
+        }
+        if (eliteCountInput) {
+            this.eliteCount = parseInt(eliteCountInput.value, 10);
+        }
+        
+        // Recreate genetic algorithm with updated parameters
+        if (this.geneticAlgorithm) {
+            this.geneticAlgorithm.dispose();
+        }
+        this.geneticAlgorithm = new GeneticAlgorithm(
+            this.grid,
+            this.neuralNetwork,
+            this.cellularAutomata,
+            {
+                populationSize: this.populationSize,
+                mutationRate: this.mutationRate,
+                mutationStrength: this.mutationStrength,
+                eliteCount: this.eliteCount
+            }
+        );
+        
         this.isTraining = true;
-        const losses = [];
         
-        // Extract center 10×10 region coordinates
-        const centerX = Math.floor(this.grid.width / 2) - 5;
-        const centerY = Math.floor(this.grid.height / 2) - 5;
-        
-        for (let iteration = 0; iteration < numIterations; iteration++) {
-            if (!this.isTraining) {
-                break; // Training was stopped
-            }
-            
-            // Step 1: Reset grid to single seed cell at center
-            this._resetToSeedCell();
-            
-            // Step 2: Run CA for configured number of steps
-            for (let caStep = 0; caStep < this.caStepsPerIteration; caStep++) {
-                this.cellularAutomata.update();
-            }
-            
-            // Step 3: Compute loss on final state
-            const finalLoss = this.computeLoss(targetShape);
-            
-            // Step 4: Create training examples based on target vs actual state
-            // We'll train the model to output the target state given current neighbor states
-            const trainingExamples = [];
-            const targetOutputs = [];
-            
-            for (let ty = 0; ty < 10; ty++) {
-                for (let tx = 0; tx < 10; tx++) {
-                    const gridX = centerX + tx;
-                    const gridY = centerY + ty;
-                    
-                    // Get neighbor input for this cell (from final state)
-                    const neighborInput = this.grid.getNeighborInput(gridX, gridY);
-                    
-                    // Target output: should match target shape
-                    const targetOn = targetShape[ty][tx];
-                    const targetOutput = new Float32Array(6);
-                    targetOutput[0] = targetOn ? 1.0 : 0.0; // on/off
-                    
-                    // For state vector, we can either:
-                    // Option 1: Keep current state (preserve what evolved)
-                    // Option 2: Set to zero (simpler)
-                    // Option 3: Learn to match some target state vector
-                    // Using Option 2 for simplicity - state vector can be learned later
-                    for (let i = 0; i < 5; i++) {
-                        targetOutput[i + 1] = 0.0; // Zero state vector
-                    }
-                    
-                    trainingExamples.push(neighborInput);
-                    targetOutputs.push(targetOutput);
-                }
-            }
-            
-            // Step 5: Train on this batch
-            const inputTensor = tf.tensor2d(
-                trainingExamples.map(arr => Array.from(arr)),
-                [trainingExamples.length, 30]
-            );
-            const targetTensor = tf.tensor2d(
-                targetOutputs.map(arr => Array.from(arr)),
-                [targetOutputs.length, 6]
-            );
-            
-            // Train on this batch using model.fit
-            const model = this.neuralNetwork.getModel();
-            const history = await model.fit(inputTensor, targetTensor, {
-                epochs: 1,
-                batchSize: Math.min(this.batchSize, trainingExamples.length),
-                shuffle: false,
-                verbose: 0
-            });
-            
-            const trainingLoss = history.history.loss[0];
-            losses.push(finalLoss); // Store the final grid loss, not training loss
-            this.lossHistory.push(finalLoss);
-            this.trainingStep++;
-            
-            // Clean up tensors
-            inputTensor.dispose();
-            targetTensor.dispose();
-            
-            // Call progress callback
-            if (progressCallback) {
-                let shouldContinue = true;
-                try {
-                    shouldContinue = progressCallback(this.trainingStep, finalLoss, true) !== false;
-                } catch (error) {
-                    console.error('Error in progress callback:', error);
+        // Train using genetic algorithm
+        const losses = await this.geneticAlgorithm.train(
+            targetShape,
+            numGenerations,
+            genSteps,
+            (generation, bestLoss, shouldContinue) => {
+                this.trainingStep = generation;
+                this.lossHistory.push(bestLoss);
+                
+                // Update main network with best performer after each generation
+                // This allows user to stop and use the current best
+                const bestNetwork = this.geneticAlgorithm.getBestNetwork();
+                if (bestNetwork) {
+                    const bestWeights = bestNetwork.getModel().getWeights();
+                    // Clone weights before setting (setWeights takes ownership)
+                    const clonedWeights = bestWeights.map(w => w.clone());
+                    this.neuralNetwork.getModel().setWeights(clonedWeights);
+                    // Dispose cloned weights after setting (setWeights takes ownership, but we cloned so we need to dispose our clones)
+                    // Actually, setWeights takes ownership, so we don't need to dispose. But to be safe, let's not dispose the originals.
+                    // The originals belong to bestNetwork and should not be disposed.
                 }
                 
-                if (!shouldContinue) {
-                    this.isTraining = false;
-                    break;
+                if (progressCallback) {
+                    return progressCallback(generation, bestLoss, shouldContinue);
                 }
+                return shouldContinue;
             }
-            
-            // Small delay to prevent blocking
-            await new Promise(resolve => setTimeout(resolve, 0));
+        );
+        
+        // Ensure main network is updated with best performer (in case training completed)
+        const bestNetwork = this.geneticAlgorithm.getBestNetwork();
+        if (bestNetwork) {
+            const bestWeights = bestNetwork.getModel().getWeights();
+            // Clone weights before setting (setWeights takes ownership)
+            const clonedWeights = bestWeights.map(w => w.clone());
+            this.neuralNetwork.getModel().setWeights(clonedWeights);
+            // Note: setWeights takes ownership of the cloned weights
+            // The original bestWeights belong to bestNetwork and should not be disposed
         }
         
         this.isTraining = false;
         return losses;
     }
     
+    
     /**
      * Stop training (if currently training)
      */
     stopTraining() {
         this.isTraining = false;
+        if (this.geneticAlgorithm) {
+            this.geneticAlgorithm.stopTraining();
+        }
     }
     
     /**
@@ -392,25 +281,16 @@ class Trainer {
         this.trainingStep = 0;
     }
     
-    /**
-     * Set learning rate and reinitialize optimizer
-     * @param {number} learningRate - New learning rate
-     */
-    setLearningRate(learningRate) {
-        this.learningRate = learningRate;
-        this._initializeOptimizer();
-    }
     
     /**
      * Dispose of resources
      */
     dispose() {
         this.stopTraining();
-        if (this.optimizer) {
-            this.optimizer.dispose();
-            this.optimizer = null;
+        if (this.geneticAlgorithm) {
+            this.geneticAlgorithm.dispose();
+            this.geneticAlgorithm = null;
         }
         this.lossHistory = [];
     }
 }
-
