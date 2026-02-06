@@ -117,6 +117,13 @@ class CellularAutomata {
             this.currentStep++;
             
             // Check if we've reached the step limit (unless continuous mode)
+            // Training loop: for (step=0; step<genSteps; step++) runs genSteps times
+            // To match training, we need to run exactly maxSteps updates
+            // currentStep starts at 0, increments after each update
+            // After maxSteps updates: currentStep = maxSteps
+            // We stop when currentStep >= maxSteps (runs exactly maxSteps updates)
+            // Note: If user reports needing one more step, the issue may be elsewhere
+            // (e.g., initial grid state, or how steps are counted during training display)
             if (!this.isContinuous && this.maxSteps !== null && this.currentStep >= this.maxSteps) {
                 // Save completion callback before stopping (stop() clears it)
                 const completionCallback = this.completionCallback;

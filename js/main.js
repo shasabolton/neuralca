@@ -7,6 +7,7 @@ let grid;
 let neuralNetwork;
 let cellularAutomata;
 let trainer;
+let game;
 let testCanvas;
 let testCtx;
 let targetCanvas;
@@ -69,6 +70,9 @@ function init() {
     // Initialize cellular automata
     cellularAutomata = new CellularAutomata(grid, neuralNetwork);
     
+    // Create game instance
+    game = new Game(grid, cellularAutomata);
+    
     // Initialize trainer with GA parameters (will be read from UI)
     trainer = new Trainer(grid, neuralNetwork, cellularAutomata, {
         populationSize: 30,
@@ -93,6 +97,11 @@ function init() {
     genStepsDropdown = document.getElementById('genSteps');
     continuousCheckbox = document.getElementById('continuousCheckbox');
     lossValueElement = document.getElementById('lossValue');
+    
+    // Set loss display element on game instance
+    if (game && lossValueElement) {
+        game.setLossDisplayElement(lossValueElement);
+    }
     
     // Initial render
     renderTestCanvas();
@@ -220,55 +229,12 @@ function getTargetShape() {
  * Calculate and display the loss between current grid state and target shape
  */
 function calculateAndDisplayLoss() {
-    if (!grid || !targetShape || !lossValueElement) {
+    if (!game || !targetShape) {
         return;
     }
     
-    // Check if target shape has any pixels
-    let hasTarget = false;
-    for (let y = 0; y < 10; y++) {
-        for (let x = 0; x < 10; x++) {
-            if (targetShape[y][x]) {
-                hasTarget = true;
-                break;
-            }
-        }
-        if (hasTarget) break;
-    }
-    
-    if (!hasTarget) {
-        lossValueElement.textContent = '-';
-        return;
-    }
-    
-    // Extract center 5×5 region from 9×9 grid (centered at pixel 4,4)
-    const centerX = Math.floor(grid.width / 2) - 2;
-    const centerY = Math.floor(grid.height / 2) - 2;
-    
-    let totalLoss = 0;
-    let cellCount = 0;
-    let error = 0;
-    let totalError = 0;
-    
-    for (let ty = 0; ty < 5; ty++) {
-        for (let tx = 0; tx < 5; tx++) {
-            const gridX = centerX + tx;
-            const gridY = centerY + ty;
-            
-            const cell = grid.getCell(gridX, gridY);
-            const targetValue = targetShape[ty][tx] ? 1.0 : 0.0;
-            const actualValue = cell.on ? 1.0 : 0.0;
-            
-            // Mean squared error
-            error = targetValue - actualValue;
-            totalError += error;
-            totalLoss += error * error;
-            cellCount++;
-        }
-    }
-    console.log("totalError: " + totalError.toFixed(6));
-    const loss = totalLoss / cellCount;
-    lossValueElement.textContent = loss.toFixed(6) + "    totalError: " + totalError.toFixed(6);
+    // Game.calculateError() handles all calculation and UI display
+    game.calculateError(targetShape);
 }
 
 /**
@@ -362,10 +328,7 @@ async function handleTrain() {
         
         // The best network is already applied (updated after each generation)
         // Reset grid to seed and render to show current best
-        grid.clear();
-        const centerX = Math.floor(grid.width / 2);
-        const centerY = Math.floor(grid.height / 2);
-        grid.setCell(centerX, centerY, true);
+        game.resetToSeed();
         renderTestCanvas();
         calculateAndDisplayLoss();
         
@@ -374,8 +337,8 @@ async function handleTrain() {
     
     // Check if target shape has any pixels
     let hasTarget = false;
-    for (let y = 0; y < 10; y++) {
-        for (let x = 0; x < 10; x++) {
+    for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 5; x++) {
             if (targetShape[y][x]) {
                 hasTarget = true;
                 break;
@@ -413,28 +376,18 @@ async function handleTrain() {
         await trainer.train(targetShape, numGenerations, (generation, loss, shouldContinue) => {
             console.log(`Training generation ${generation}/${numGenerations}, loss: ${loss.toFixed(6)}`);
             
-            // Update UI to show progress
-            if (lossValueElement) {
-                lossValueElement.textContent = loss.toFixed(6);
-            }
-            
             // Run the best performer from this generation on the test grid
             // The best network is already applied to the main network by Trainer
             // Reset grid to seed cell
-            grid.clear();
-            const centerX = Math.floor(grid.width / 2);
-            const centerY = Math.floor(grid.height / 2);
-            grid.setCell(centerX, centerY, true);
+            game.resetToSeed();
             
-            // Run CA for genSteps to show evolution
-            for (let step = 0; step < genSteps; step++) {
-                cellularAutomata.update();
-            }
+            // Run CA for genSteps using game
+            game.run(genSteps, null); // Don't calculate error here, it's already done in training
             
             // Render the result on test canvas
             renderTestCanvas();
             
-            // Calculate and display loss
+            // Calculate and display loss (includes totalError and UI update)
             calculateAndDisplayLoss();
             
             // Update button text to show progress (button says "Stop" when training)
@@ -450,9 +403,8 @@ async function handleTrain() {
         if (lossHistory.length > 0) {
             const finalLoss = lossHistory[lossHistory.length - 1];
             console.log(`Final loss: ${finalLoss.toFixed(6)}`);
-            if (lossValueElement) {
-                lossValueElement.textContent = finalLoss.toFixed(6);
-            }
+            // Display final loss using game (will show full display with totalError)
+            calculateAndDisplayLoss();
         }
     } catch (error) {
         console.error('Training error:', error);
@@ -517,13 +469,8 @@ function handleClear() {
         runButton.textContent = 'Run';
     }
     
-    // Clear the grid
-    grid.clear();
-    
-    // Place a single seed cell at the center
-    const centerX = Math.floor(grid.width / 2);
-    const centerY = Math.floor(grid.height / 2);
-    grid.setCell(centerX, centerY, true);
+    // Clear the grid and reset to seed cell
+    game.resetToSeed();
     
     // Re-render the test canvas
     renderTestCanvas();

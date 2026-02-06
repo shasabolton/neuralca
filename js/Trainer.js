@@ -23,6 +23,9 @@ class Trainer {
         this.neuralNetwork = neuralNetwork;
         this.cellularAutomata = cellularAutomata;
         
+        // Create game instance
+        this.game = new Game(grid, cellularAutomata);
+        
         // GA parameters
         this.populationSize = config.populationSize || 30;
         this.mutationRate = config.mutationRate || 0.15;
@@ -52,10 +55,7 @@ class Trainer {
      * Reset grid to a single seed cell at the center
      */
     _resetToSeedCell() {
-        this.grid.clear();
-        const centerX = Math.floor(this.grid.width / 2);
-        const centerY = Math.floor(this.grid.height / 2);
-        this.grid.setCell(centerX, centerY, true);
+        this.game.resetToSeed();
     }
     
     /**
@@ -65,35 +65,7 @@ class Trainer {
      * @returns {number} Loss value (mean squared error)
      */
     computeLoss(targetShape) {
-        if (!targetShape || targetShape.length !== 5 || targetShape[0].length !== 5) {
-            throw new Error('Target shape must be a 5×5 boolean array');
-        }
-        
-        // Extract center 5×5 region from 9×9 grid (centered at pixel 4,4)
-        // 5×5 region spans from (2,2) to (6,6) - symmetric about center
-        const centerX = Math.floor(this.grid.width / 2) - 2;
-        const centerY = Math.floor(this.grid.height / 2) - 2;
-        
-        let totalLoss = 0;
-        let cellCount = 0;
-        
-        for (let ty = 0; ty < 5; ty++) {
-            for (let tx = 0; tx < 5; tx++) {
-                const gridX = centerX + tx;
-                const gridY = centerY + ty;
-                
-                const cell = this.grid.getCell(gridX, gridY);
-                const targetValue = targetShape[ty][tx] ? 1.0 : 0.0;
-                const actualValue = cell.on ? 1.0 : 0.0;
-                
-                // Mean squared error
-                const error = targetValue - actualValue;
-                totalLoss += error * error;
-                cellCount++;
-            }
-        }
-        
-        return totalLoss / cellCount;
+        return this.game.calculateError(targetShape);
     }
     
     /**

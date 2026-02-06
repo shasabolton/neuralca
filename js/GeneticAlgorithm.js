@@ -23,6 +23,9 @@ class GeneticAlgorithm {
         this.baseNetwork = baseNetwork;
         this.cellularAutomata = cellularAutomata;
         
+        // Create game instance
+        this.game = new Game(grid, cellularAutomata);
+        
         // GA parameters
         this.populationSize = config.populationSize || 30;
         this.mutationRate = config.mutationRate || 0.15;
@@ -89,10 +92,7 @@ class GeneticAlgorithm {
      * Reset grid to seed cell at center
      */
     _resetToSeedCell() {
-        this.grid.clear();
-        const centerX = Math.floor(this.grid.width / 2);
-        const centerY = Math.floor(this.grid.height / 2);
-        this.grid.setCell(centerX, centerY, true);
+        this.game.resetToSeed();
     }
     
     /**
@@ -104,19 +104,14 @@ class GeneticAlgorithm {
      */
     _evaluateFitness(network, targetShape, genSteps) {
         // Reset grid to seed cell
-        this._resetToSeedCell();
+        this.game.resetToSeed();
         
         // Temporarily replace CA's network with this one
         const originalNetwork = this.cellularAutomata.neuralNetwork;
         this.cellularAutomata.neuralNetwork = network;
         
-        // Run CA for genSteps
-        for (let step = 0; step < genSteps; step++) {
-            this.cellularAutomata.update();
-        }
-        
-        // Compute loss (lower is better)
-        const loss = this._computeLoss(targetShape);
+        // Run CA and calculate error using game
+        const loss = this.game.run(genSteps, targetShape);
         
         // Convert loss to fitness (higher is better)
         // Use inverse with small epsilon to avoid division by zero
@@ -126,42 +121,6 @@ class GeneticAlgorithm {
         this.cellularAutomata.neuralNetwork = originalNetwork;
         
         return { fitness, loss };
-    }
-    
-    /**
-     * Compute loss between current grid state and target shape
-     * @param {Array<Array<boolean>>} targetShape - 5×5 boolean array
-     * @returns {number} Loss value (mean squared error)
-     */
-    _computeLoss(targetShape) {
-        if (!targetShape || targetShape.length !== 5 || targetShape[0].length !== 5) {
-            throw new Error('Target shape must be a 5×5 boolean array');
-        }
-        
-        // Extract center 5×5 region from 9×9 grid
-        const centerX = Math.floor(this.grid.width / 2) - 2;
-        const centerY = Math.floor(this.grid.height / 2) - 2;
-        
-        let totalLoss = 0;
-        let cellCount = 0;
-        
-        for (let ty = 0; ty < 5; ty++) {
-            for (let tx = 0; tx < 5; tx++) {
-                const gridX = centerX + tx;
-                const gridY = centerY + ty;
-                
-                const cell = this.grid.getCell(gridX, gridY);
-                const targetValue = targetShape[ty][tx] ? 1.0 : 0.0;
-                const actualValue = cell.on ? 1.0 : 0.0;
-                
-                // Mean squared error
-                const error = targetValue - actualValue;
-                totalLoss += error * error;
-                cellCount++;
-            }
-        }
-        
-        return totalLoss / cellCount;
     }
     
     /**
